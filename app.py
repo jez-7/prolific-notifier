@@ -10,10 +10,12 @@ TELEGRAM_CHAT_ID     = os.environ.get('TELEGRAM_CHAT_ID')
 SSM_REFRESH_TOKEN    = os.environ.get('SSM_REFRESH_TOKEN', '/prolificNotify/refresh_token')
 SSM_ACCESS_TOKEN     = os.environ.get('SSM_ACCESS_TOKEN', '/prolificNotify/access_token')
 SSM_SEEN_PARAM_NAME  = os.environ.get('SSM_SEEN_PARAM_NAME', '/prolificNotify/seen_study_ids')
+SSM_ERROR_FLAG       = os.environ.get('SSM_ERROR_FLAG', '/prolificNotify/error_notified')
 
 # OIDC Config (Auth0)
 PROLIFIC_AUTH_URL  = "https://auth.prolific.com/oauth/token"
 PROLIFIC_CLIENT_ID = os.environ.get('PROLIFIC_CLIENT_ID')
+PROLIFIC_AUDIENCE  = "https://internal-api.prolific.com"
 
 SSM_CLIENT = None
 
@@ -26,7 +28,6 @@ def get_ssm_client():
 
 
 def get_ssm(name, default=None):
-    """Lee un parámetro de SSM. Devuelve default si no existe."""
     client = get_ssm_client()
     try:
         r = client.get_parameter(Name=name, WithDecryption=True)
@@ -39,7 +40,6 @@ def get_ssm(name, default=None):
 
 
 def put_ssm(name, value, secure=False):
-    """Guarda o actualiza un parámetro en SSM."""
     param_type = 'SecureString' if secure else 'String'
     try:
         get_ssm_client().put_parameter(
@@ -54,7 +54,6 @@ def refresh_access_token():
     Usa el refresh_token guardado en SSM para obtener un nuevo access_token
     desde Auth0 (auth.prolific.com). Si Auth0 rota el refresh_token,
     también guarda el nuevo.
-    Returns: access_token (str) o None si falla.
     """
     refresh_token = get_ssm(SSM_REFRESH_TOKEN)
     if not refresh_token:
@@ -65,6 +64,8 @@ def refresh_access_token():
         "grant_type": "refresh_token",
         "client_id": PROLIFIC_CLIENT_ID,
         "refresh_token": refresh_token,
+        "audience": PROLIFIC_AUDIENCE,
+        "scope": "openid profile offline_access",
     }
 
     try:
@@ -85,9 +86,12 @@ def refresh_access_token():
                 put_ssm(SSM_REFRESH_TOKEN, new_refresh_token, secure=True)
                 print("Refresh token rotado y guardado.")
 
+            # limpiar flag de error si existia (el refresh volvio a funcionar)
+            put_ssm(SSM_ERROR_FLAG, 'false')
+
             return new_access_token
         else:
-            print(f"Error renovando token: {r.status_code} — {r.text[:200]}")
+            print(f"Error renovando token: {r.status_code} — {r.text[:300]}")
             return None
 
     except Exception as e:
@@ -96,7 +100,6 @@ def refresh_access_token():
 
 
 def send_telegram_alert(message):
- 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -111,27 +114,37 @@ def send_telegram_alert(message):
         print(f"Error enviando alerta a Telegram: {e}")
 
 
+def notify_error_once(message):
+    """ envia una alerta de error a Telegram 1 sola vez """
+    already_notified = get_ssm(SSM_ERROR_FLAG, default='false')
+    if already_notified == 'true':
+        print("Error ya notificado anteriormente, no se repite el mensaje.")
+        return
+    send_telegram_alert(message)
+    put_ssm(SSM_ERROR_FLAG, 'true')
+
+
 def lambda_handler(event, context):
     from datetime import datetime, timedelta
 
-    #  horas valle
-
+    # horas valle
     hora_argentina = (datetime.utcnow() - timedelta(hours=3)).hour
-    
+
     if 4 <= hora_argentina < 10:
-        print(f"Modo reposo: Son las {hora_argentina} hs. No se consultará Prolific.")
+        print(f"Modo reposo: Son las {hora_argentina} hs.")
         return {"statusCode": 200, "body": "Horario inactivo"}
 
     prolific_url = "https://internal-api.prolific.com/api/v1/participant/studies/"
 
-    # obtener access_token 
+    # obtener access_token
     access_token = refresh_access_token()
     if not access_token:
-        send_telegram_alert(
+        notify_error_once(
             "🔴 *Error crítico*\n\n"
             "No se pudo renovar el token de Prolific.\n"
             "Es posible que el refresh token haya expirado.\n"
-            "Necesitás actualizar el refresh token manualmente en SSM."
+            "Actualizá el refresh token en SSM Parameter Store.\n\n"
+            "_Este mensaje se envía una sola vez hasta que se resuelva._"
         )
         return {"statusCode": 401, "body": "No se pudo renovar el token"}
 
@@ -190,11 +203,12 @@ def lambda_handler(event, context):
 
         elif response.status_code == 401:
             print("Access token rechazado a pesar de ser recién renovado.")
-            send_telegram_alert(
+            notify_error_once(
                 "⚠️ *Token rechazado por Prolific*\n\n"
                 "El access token recién renovado fue rechazado.\n"
                 "Puede que el refresh token haya expirado.\n"
-                "Actualizalo en SSM Parameter Store."
+                "Actualizalo en SSM Parameter Store.\n\n"
+                "_Este mensaje se envía una sola vez hasta que se resuelva._"
             )
             return {"statusCode": 401, "body": "Token rechazado"}
 
@@ -216,10 +230,8 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
-  
     TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT_ID   = os.environ.get('TELEGRAM_CHAT_ID')
 
     print("Enviando mensaje de prueba a Telegram...")
     send_telegram_alert("✅ Bot de Prolific configurado con auto-refresh de tokens.")
-    
