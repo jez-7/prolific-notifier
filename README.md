@@ -10,6 +10,7 @@ Está diseñado para ejecutarse 100% de forma gratuita y sin servidores, utiliza
 - **Auto-Refresh de Tokens:** Usa tu `refresh_token` de Prolific para renovar el acceso de forma automática. ¡No necesitas actualizarlo todos los días!
 - **Notificaciones por Telegram:** Cero correos perdidos; recibe un mensaje push instantáneo en el chat con nombre, pago, cupos disponibles y duración.
 - **Deduplicación Inteligente:** Usa AWS Systems Manager (SSM) Parameter Store para recordar los estudios ya notificados. No envía notificaciones duplicadas por el mismo estudio.
+- **Protección Anti-Spam:** Solo te notificará de un error (por ejemplo, si vence el token) una sola vez en lugar de enviarte mensajes continuamente.
 - **Horas Valle ("Modo Reposo"):** Pausa las consultas durante la madrugada para no alertar innecesariamente y mantener un perfil bajo en la API de Prolific.
 
 ## Requisitos Previos 📋
@@ -35,6 +36,7 @@ Debes crear los siguientes parámetros en AWS Systems Manager (SSM) en la misma 
 - `/prolificNotify/refresh_token` (Tipo: **SecureString**): Tu refresh token (sacado del Local Storage en `app.prolific.com`).
 - `/prolificNotify/access_token` (Tipo: **SecureString**): Se generará y renovará automáticamente, pero puedes crearlo vacío al inicio.
 - `/prolificNotify/seen_study_ids` (Tipo: **String**): Se actualiza automáticamente para recordar los estudios notificados. Puedes crearlo vacío.
+- `/prolificNotify/error_notified` (Tipo: **String**): Se actualiza automáticamente para evitar spam de alertas de error. Puedes crearlo con el valor `false`.
 
 ### 3. Roles e IAM (Lambda)
 La función de AWS Lambda necesita una política (Policy) de IAM adicional para acceder a SSM:
@@ -54,6 +56,7 @@ Como este proyecto usa librerías externas (como `requests`), necesitas empaquet
    - `SSM_REFRESH_TOKEN` = `/prolificNotify/refresh_token`
    - `SSM_ACCESS_TOKEN` = `/prolificNotify/access_token`
    - `SSM_SEEN_PARAM_NAME` = `/prolificNotify/seen_study_ids`
+   - `SSM_ERROR_FLAG` = `/prolificNotify/error_notified`
 
 ### 5. Automatización (EventBridge)
 Utiliza Amazon EventBridge Scheduler para ejecutar esta función Lambda cada `rate(2 minutes)` (o el tiempo que prefieras, respetando siempre no saturar la API).
