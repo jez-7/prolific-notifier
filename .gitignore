@@ -1,0 +1,16 @@
+# Entorno virtual
+venv/
+__pycache__/
+
+# Variables de entorno (tokens sensibles)
+.env
+.env.*
+!.env.example
+
+# Lambda build
+lambda_package/
+*.zip
+
+# IDE
+.vscode/
+.idea/
